@@ -112,35 +112,6 @@ class CSCL(nn.Module):
             nn.GELU(),
             nn.Linear(input_dim * 2, output_dim)
         )
-
-
-    def get_bbox_loss(self, output_coord, target_bbox, is_image=None):
-        """
-        Bounding Box Loss: L1 & GIoU
-
-        Args:
-            image_embeds: encoding full images
-        """
-        loss_bbox = F.l1_loss(output_coord, target_bbox, reduction='none')  # bsz, 4
-
-        boxes1 = box_ops.box_cxcywh_to_xyxy(output_coord)
-        boxes2 = box_ops.box_cxcywh_to_xyxy(target_bbox)
-        if (boxes1[:, 2:] < boxes1[:, :2]).any() or (boxes2[:, 2:] < boxes2[:, :2]).any():
-            # early check of degenerated boxes
-            print("### (boxes1[:, 2:] < boxes1[:, :2]).any() or (boxes2[:, 2:] < boxes2[:, :2]).any()")
-            loss_giou = torch.zeros(output_coord.size(0), device=output_coord.device)
-        else:
-            # loss_giou = 1 - torch.diag(box_ops.generalized_box_iou(boxes1, boxes2))  # bsz
-            loss_giou = 1 - box_ops.generalized_box_iou(boxes1, boxes2)  # bsz
-
-        if is_image is None:
-            num_boxes = target_bbox.size(0)
-        else:
-            num_boxes = torch.sum(1 - is_image)
-            loss_bbox = loss_bbox * (1 - is_image.view(-1, 1))
-            loss_giou = loss_giou * (1 - is_image)
-
-        return loss_bbox.sum() / num_boxes, loss_giou.sum() / num_boxes
     
     def get_cos_sim(self, vectors):
         norms = torch.norm(vectors, p=2, dim=2, keepdim=True)
