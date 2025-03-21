@@ -56,7 +56,7 @@ The Folder structure:
         └── metadata
 ```
 
-Our pre-trained CSCL model: [link](https://drive.usercontent.google.com/download?id=1ZW4akTzcB9QjsS6FcX4zQ5l2YOjl7zNy&export=download&authuser=0&confirm=t&uuid=e8e37fa5-46fd-48bb-be4b-be765ca86059&at=AIrpjvM1Jjby7_AjinIBFS9d61TL:1739189602615) (96.34 AUC, 92.48 mAP, 84.07 IoUm, 76.62 F1)
+Our pre-trained CSCL model: [link](https://drive.usercontent.google.com/download?id=1ZW4akTzcB9QjsS6FcX4zQ5l2YOjl7zNy&export=download&authuser=0&confirm=t&uuid=e8e37fa5-46fd-48bb-be4b-be765ca86059&at=AIrpjvM1Jjby7_AjinIBFS9d61TL:1739189602615) (96.34 AUC, 92.48 mAP, 84.07 IoUm, 76.62 F1) (We use train and val set for training and use test set for evaluation.)
 
 Make a folder ./results/CSCL/ and put the pre-trained model in it.
 
