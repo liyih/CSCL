@@ -1,0 +1,31 @@
+# ViT-B/16 + RoBERTa
+
+# Image setting
+train_transform_keys: ["clip"]
+val_transform_keys: ["clip"]
+image_size: 256
+patch_size: 16
+draw_false_image: 1
+image_only: False
+resolution_before: 256
+
+# Text Setting
+vqav2_label_size: 3129
+max_text_len: 50
+tokenizer: "roberta-base"
+vocab_size: 50265
+whole_word_masking: False # note that whole_word_masking does not work for RoBERTa
+mlm_prob: 0.15
+draw_false_text: 0
+
+# Transformer Setting
+num_top_layer: 6
+input_image_embed_size: 768
+input_text_embed_size: 768
+vit: 'ViT-B/16'
+hidden_size: 768
+num_heads: 12
+num_layers: 6
+mlp_ratio: 4
+drop_rate: 0.1
+load_path: "meter_clip16_224_roberta_pretrain.ckpt"
