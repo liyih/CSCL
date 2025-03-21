@@ -70,11 +70,11 @@ class CSCL(nn.Module):
         self.cls_head_img = self.build_mlp(input_dim=text_width, output_dim=2)
         self.cls_head_text = self.build_mlp(input_dim=text_width, output_dim=2)
 
-        # intra_modeling
+        # contextual modeling
         self.img_intra_model = Intra_Modal_Modeling(12, 1024, vision_width, vision_width, 16)
         self.text_intra_model = Intra_Modal_Modeling(12, 1024, vision_width, vision_width, 8)
 
-        # extra_modeling
+        # semantic modeling
         self.img_extra_model = Extra_Modal_Modeling(12, vision_width, 16)
         self.text_extra_model = Extra_Modal_Modeling(12, vision_width, 8)
         
@@ -112,21 +112,6 @@ class CSCL(nn.Module):
             nn.GELU(),
             nn.Linear(input_dim * 2, output_dim)
         )
-    
-    def get_cos_sim(self, vectors):
-        norms = torch.norm(vectors, p=2, dim=2, keepdim=True)
-        normalized_vectors = vectors / norms
-        similarity_matrix = torch.bmm(normalized_vectors, normalized_vectors.transpose(1, 2))
-        sim_score = torch.clamp((similarity_matrix+1)/2, 0, 1)
-
-        # sim_score_max = torch.max(sim_score, dim=-1, keepdim=True)[0]
-        # sim_score_min = torch.min(sim_score, dim=-1, keepdim=True)[0]
-        # sim_score = (sim_score-sim_score_min)/(sim_score_max-sim_score_min)
-
-        patch_score = sim_score.sum(dim=-1)/vectors.shape[1]
-        img_score = patch_score.sum(dim=-1)/vectors.shape[1]
-
-        return sim_score, patch_score, img_score
     
     def forward(self, image, label, text, fake_image_box, fake_text_pos, is_train=True):
         if is_train:
