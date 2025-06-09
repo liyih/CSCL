@@ -5,15 +5,15 @@
 <h5>MAIS&CASIA, UCAS, Sangfor, BJTU and Alibaba<h5>
 </div>
 
-[![arXiv](https://img.shields.io/badge/arXiv-Paper-<COLOR>.svg)]()
+[![arXiv](https://img.shields.io/badge/arXiv-Paper-<COLOR>.svg)](https://arxiv.org/abs/2506.05890)
 
 ## Introduction
 
 This repository is an official implementation of CSCL.
 
 ## News
-- [2025/xx/xx] Camera Ready version is released.
-- [2025/2/27] Codes and weights are released.
+- [2025/6/9] Camera Ready version is released.
+- [2025/6/9] Codes and weights are released.
 - [2025/2/27] CSCL is accepted by CVPR 2025🎉🎉.
 
 ## Environment Setting
@@ -81,5 +81,11 @@ We thank these great works and open-source codebases:
 ## Citation
 If you find our work is useful, please give this repo a star and cite our work as:
 ```bibtex
-
+@inproceedings{li2025unleashing,
+  title={Unleashing the Potential of Consistency Learning for Detecting and Grounding Multi-Modal Media Manipulation},
+  author={Li, Yiheng and Yang, Yang and Tan, Zichang and Liu, Huan and Chen, Weihua and Zhou, Xu and Lei, Zhen},
+  booktitle={Proceedings of the Computer Vision and Pattern Recognition Conference},
+  pages={9242--9252},
+  year={2025}
+}
 ```
