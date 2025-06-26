@@ -5,10 +5,13 @@ import torch.nn.functional as F
 from torch import nn
 import numpy as np
 import random
-import sys
+
 from models import box_ops
+from tools.multilabel_metrics import get_multi_label
+from consist_modeling import get_sscore_label, get_sscore_label_text
 from timm.models.layers import trunc_normal_
 from .METER import METERTransformerSS
+from torch.nn import CrossEntropyLoss, BCELoss
 from .consist_modeling import Intra_Modal_Modeling, Extra_Modal_Modeling
 import math
 import yaml
@@ -43,6 +46,50 @@ def coords_2d(x_size, y_size):
     coord_base = torch.cat([batch_x[None], batch_y[None]], dim=0)
     coord_base = coord_base.view(2, -1).transpose(1, 0) # (H*W, 2)
     return coord_base
+    
+def get_weighted_bce_loss(prediction, gt):
+    loss = nn.BCELoss(reduction='none')
+
+    class_loss = loss(prediction, gt) 
+
+    weights = torch.ones_like(gt)
+    w_negative = gt.sum()/gt.size(0) 
+    w_positive = 1 - w_negative  
+    weights[gt >= 0.5] = w_positive
+    weights[gt < 0.5] = w_negative
+    w_class_loss = torch.mean(weights * class_loss)
+
+    #######################################
+    # get classification precision and recall
+    predicted_labels = prediction.detach().cpu().round().numpy()
+    PT_num = np.logical_and(gt.cpu().numpy(), predicted_labels).sum()
+    P = PT_num / (predicted_labels.sum() + 1)
+    R = PT_num / (gt.sum() + 1)
+    return w_class_loss, P, R
+
+def get_it_bce_loss(prediction, gt):
+    loss = nn.BCELoss(reduction='none')
+    
+    mask = (gt==-100)
+    prediction = prediction[~mask]
+    gt = 1 - gt[~mask]
+    
+    class_loss = loss(prediction, gt) 
+
+    weights = torch.ones_like(gt)
+    w_negative = gt.sum()/gt.size(0) 
+    w_positive = 1 - w_negative  
+    weights[gt >= 0.5] = w_positive
+    weights[gt < 0.5] = w_negative
+    w_class_loss = torch.mean(weights * class_loss)
+
+    #######################################
+    # get classification precision and recall
+    predicted_labels = prediction.detach().cpu().round().numpy()
+    PT_num = np.logical_and(gt.cpu().numpy(), predicted_labels).sum()
+    P = PT_num / (predicted_labels.sum() + 1)
+    R = PT_num / (gt.sum() + 1)
+    return w_class_loss, P, R
 
 class CSCL(nn.Module):
     def __init__(self, 
@@ -70,11 +117,11 @@ class CSCL(nn.Module):
         self.cls_head_img = self.build_mlp(input_dim=text_width, output_dim=2)
         self.cls_head_text = self.build_mlp(input_dim=text_width, output_dim=2)
 
-        # contextual modeling
+        # intra_modeling
         self.img_intra_model = Intra_Modal_Modeling(12, 1024, vision_width, vision_width, 16)
         self.text_intra_model = Intra_Modal_Modeling(12, 1024, vision_width, vision_width, 8)
 
-        # semantic modeling
+        # extra_modeling
         self.img_extra_model = Extra_Modal_Modeling(12, vision_width, 16)
         self.text_extra_model = Extra_Modal_Modeling(12, vision_width, 8)
         
@@ -112,11 +159,129 @@ class CSCL(nn.Module):
             nn.GELU(),
             nn.Linear(input_dim * 2, output_dim)
         )
+
+
+    def get_bbox_loss(self, output_coord, target_bbox, is_image=None):
+        """
+        Bounding Box Loss: L1 & GIoU
+
+        Args:
+            image_embeds: encoding full images
+        """
+        loss_bbox = F.l1_loss(output_coord, target_bbox, reduction='none')  # bsz, 4
+
+        boxes1 = box_ops.box_cxcywh_to_xyxy(output_coord)
+        boxes2 = box_ops.box_cxcywh_to_xyxy(target_bbox)
+        if (boxes1[:, 2:] < boxes1[:, :2]).any() or (boxes2[:, 2:] < boxes2[:, :2]).any():
+            # early check of degenerated boxes
+            print("### (boxes1[:, 2:] < boxes1[:, :2]).any() or (boxes2[:, 2:] < boxes2[:, :2]).any()")
+            loss_giou = torch.zeros(output_coord.size(0), device=output_coord.device)
+        else:
+            # loss_giou = 1 - torch.diag(box_ops.generalized_box_iou(boxes1, boxes2))  # bsz
+            loss_giou = 1 - box_ops.generalized_box_iou(boxes1, boxes2)  # bsz
+
+        if is_image is None:
+            num_boxes = target_bbox.size(0)
+        else:
+            num_boxes = torch.sum(1 - is_image)
+            loss_bbox = loss_bbox * (1 - is_image.view(-1, 1))
+            loss_giou = loss_giou * (1 - is_image)
+
+        return loss_bbox.sum() / num_boxes, loss_giou.sum() / num_boxes
+    
+    def get_cos_sim(self, vectors):
+        norms = torch.norm(vectors, p=2, dim=2, keepdim=True)
+        normalized_vectors = vectors / norms
+        similarity_matrix = torch.bmm(normalized_vectors, normalized_vectors.transpose(1, 2))
+        sim_score = torch.clamp((similarity_matrix+1)/2, 0, 1)
+
+        # sim_score_max = torch.max(sim_score, dim=-1, keepdim=True)[0]
+        # sim_score_min = torch.min(sim_score, dim=-1, keepdim=True)[0]
+        # sim_score = (sim_score-sim_score_min)/(sim_score_max-sim_score_min)
+
+        patch_score = sim_score.sum(dim=-1)/vectors.shape[1]
+        img_score = patch_score.sum(dim=-1)/vectors.shape[1]
+
+        return sim_score, patch_score, img_score
     
     def forward(self, image, label, text, fake_image_box, fake_text_pos, is_train=True):
         if is_train:
-            print(" only support test ", file=sys.stderr)  # 将错误信息输出到标准错误
-            sys.exit(1) 
+            
+            ##================= multi-label convert ========================## 
+
+            text_atts_mask_clone = text.attention_mask.clone() # [:,1:] for ingoring class token
+            text_atts_mask_bool = text_atts_mask_clone==0 # 0 = pad token 
+
+            token_label = text.attention_mask[:,1:].clone() # [:,1:] for ingoring class token
+            token_label[token_label==0] = -100 # -100 index = padding token
+            token_label[token_label==1] = 0
+
+            for batch_idx in range(len(fake_text_pos)):
+                fake_pos_sample = fake_text_pos[batch_idx]
+                if fake_pos_sample:
+                    for pos in fake_pos_sample:
+                        token_label[batch_idx, pos] = 1
+
+            multicls_label, real_label_pos = get_multi_label(label, image)
+            sim_matrix_img, patch_label, _, _, _ = get_sscore_label(image, fake_image_box,token_label)
+            sim_matrix_text, sim_matrix_text_mask = get_sscore_label_text(token_label)
+            ##================= METER ========================## 
+            batch={}
+            batch["text_ids"] = text.input_ids
+            batch["text_masks"] = text.attention_mask
+
+            outputs = self.meter.infer(batch=batch, img=image)
+            text_embeds_output = outputs['text_feats']
+            image_embeds_output = outputs['image_feats']
+            fusion_token = self.fusion_head(outputs['cls_feats'])
+ 
+            ##================= BIC ========================## 
+            # forward the positve image-text pair          
+            with torch.no_grad():
+                bs = image.size(0)          
+
+            itm_labels = torch.ones(bs, dtype=torch.long).to(image.device)
+            itm_labels[real_label_pos] = 0 # fine-grained matching: only orig should be matched, 0 here means img-text matching
+            vl_output = self.itm_head(fusion_token)   
+            loss_BIC = F.cross_entropy(vl_output, itm_labels) 
+
+            ##============ contextual consistancy ===========##
+            image_atts = torch.ones(image_embeds_output.size()[:-1],dtype=torch.long).to(image.device)
+            image_atts_mask_bool = (image_atts==0)
+            patch_pos_emb = self.emb_img_pos(pos2posemb2d(coords_2d(16, 16).to(fusion_token.device).unsqueeze(0).repeat(bs,1,1)))
+            img_patch_feat = image_embeds_output[:,1:,:]
+            img_patch_feat, img_matrix_pred, _ = self.img_intra_model(img_patch_feat, image_atts_mask_bool[:,1:], patch_pos_emb)
+            len_text = text_embeds_output.shape[1]-1
+            token_pos_emb = self.emb_text_pos(score2posemb1d(torch.arange(0, len_text, dtype=torch.float).to(text_embeds_output.device).unsqueeze(1).repeat(bs,1,1)))
+            text_token_feat = text_embeds_output[:,1:,:]
+            text_token_feat, text_matrix_pred, _= self.text_intra_model(text_token_feat, text_atts_mask_bool[:,1:], token_pos_emb, sim_matrix_text_mask)
+
+            Loss_img_matrix, _, _ =  get_weighted_bce_loss(img_matrix_pred.view(-1), sim_matrix_img.float().view(-1))
+            Loss_text_matrix, _, _ =  get_weighted_bce_loss(text_matrix_pred[sim_matrix_text_mask].view(-1), sim_matrix_text[sim_matrix_text_mask].view(-1).float())
+
+            ##============ semantic consistancy ===========##
+            agger_feat_img, sim_score_img, _ = self.img_extra_model(img_patch_feat, image_embeds_output[:,0:1,:], text_token_feat, image_atts_mask_bool[:,1:], text_atts_mask_bool[:,1:])
+            agger_feat_text, sim_score_text, _ = self.text_extra_model(text_token_feat, text_embeds_output[:,0:1,:], img_patch_feat, text_atts_mask_bool[:,1:], image_atts_mask_bool[:,1:])
+
+            Loss_img_score, _, _ = get_it_bce_loss(sim_score_img.view(-1), patch_label.view(-1).float())
+            Loss_text_score, _, _ = get_it_bce_loss(sim_score_text.view(-1), token_label.view(-1).float())
+
+            Loss_sim = Loss_img_score + Loss_img_matrix + Loss_text_score + Loss_text_matrix
+            ##================= IMG ========================##
+
+            output_coord = self.bbox_head(agger_feat_img.squeeze(1)).sigmoid()
+            loss_bbox, loss_giou = self.get_bbox_loss(output_coord, fake_image_box)
+            output_cls_img = self.cls_head_img(agger_feat_img.squeeze(1))
+            loss_MLC_img = F.binary_cross_entropy_with_logits(output_cls_img, multicls_label.type(torch.float)[:, :2])
+
+            ##================= TMG ========================##  
+
+            output_cls_text = self.cls_head_text(agger_feat_text.squeeze(1))
+            loss_MLC_text = F.binary_cross_entropy_with_logits(output_cls_text, multicls_label.type(torch.float)[:, 2:])
+
+            ##================= MLC ========================## 
+            loss_MLC = loss_MLC_img + loss_MLC_text
+            return loss_BIC, loss_bbox, loss_giou, loss_MLC, Loss_sim
 
         else:
             

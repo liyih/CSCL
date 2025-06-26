@@ -4,6 +4,82 @@ import pdb
 from .interaction import Self_Interaction
 from timm.models.layers import trunc_normal_
 
+def calculate_patch_labels(images, boxes, fake_text_pos, num_patches=(16, 16)):
+    # 获取图片的尺寸
+    _, height, width = images.shape[1:4]
+    
+    # 计算每个 patch 的大小
+    patch_height = height // num_patches[0]
+    patch_width = width // num_patches[1]
+
+    # 将 boxes 转换为张量
+    # boxes = torch.tensor(boxes)  # shape: [N, 4]
+
+    # 计算框的坐标
+    box_x1 = (boxes[:, 0] * width).int()
+    box_y1 = (boxes[:, 1] * height).int()
+    box_w = (boxes[:, 2] * width).int()
+    box_h = (boxes[:, 3] * height).int()
+    
+    # box_x2 = box_x1 + box_w
+    # box_y2 = box_y1 + box_h
+
+    box_x2 = box_x1 + 0.5*box_w
+    box_y2 = box_y1 + 0.5*box_h
+
+    box_x1 = box_x1 - 0.5*box_w
+    box_y1 = box_y1 - 0.5*box_h
+    
+    # 计算 patch 的坐标
+    patch_x1 = torch.arange(0, width, patch_width).view(1, -1).expand(boxes.size(0), -1).to(boxes.device)
+    patch_y1 = torch.arange(0, height, patch_height).view(1, -1).expand(boxes.size(0), -1).to(boxes.device)
+    patch_x2 = patch_x1 + patch_width
+    patch_y2 = patch_y1 + patch_height
+
+    # 计算每个 patch 的面积
+    patch_area = patch_width * patch_height
+
+    # 计算相交区域
+    inter_x1 = torch.max(patch_x1, box_x1.view(-1, 1))
+    inter_y1 = torch.max(patch_y1, box_y1.view(-1, 1))
+    inter_x2 = torch.min(patch_x2, box_x2.view(-1, 1))
+    inter_y2 = torch.min(patch_y2, box_y2.view(-1, 1))
+
+    # 计算相交区域的面积
+
+    inter_area = torch.max(torch.tensor(0), inter_x2 - inter_x1).unsqueeze(1) * torch.max(torch.tensor(0), inter_y2 - inter_y1).unsqueeze(2)
+
+    # 判断条件：相交面积是否大于 patch 面积的一半
+    labels = (inter_area > (patch_area / 2)).int()
+
+    labels_extented = labels.view(images.shape[0], -1, 1)
+
+    consistency_matrix = (labels_extented == labels_extented.transpose(2, 1)).int()
+    
+    labels_extented_it = labels.view(images.shape[0], 1, -1)
+    fake_text_pos_extented = fake_text_pos.view(images.shape[0], -1, 1)
+
+    consistency_matrix_it = ((labels_extented_it + fake_text_pos_extented)<1).int()
+
+    return consistency_matrix, consistency_matrix_it, labels.view(images.shape[0], -1)
+
+def get_sscore_label(img, fake_img_box, fake_text_pos, len_edge=16):
+    consistency_matrix, consistency_matrix_it, labels = calculate_patch_labels(img,fake_img_box,fake_text_pos,(len_edge,len_edge))
+
+    patch_score = consistency_matrix.sum(dim=-1)/(len_edge*len_edge)
+    img_score = patch_score.sum(dim=-1)/(len_edge*len_edge)
+
+    return consistency_matrix, labels, patch_score, img_score, consistency_matrix_it
+
+def get_sscore_label_text(fake_text_pos):
+
+    fake_text_pos_extend = fake_text_pos.unsqueeze(-1)
+    sim_matrix = ((fake_text_pos_extend == fake_text_pos_extend.transpose(2,1))).int()
+    matrix_mask = ((fake_text_pos_extend + fake_text_pos_extend.transpose(2,1))>=0)
+    for i in range(fake_text_pos.shape[0]):
+        sim_matrix[i].fill_diagonal_(1)
+    return sim_matrix, matrix_mask
+
 class Intra_Modal_Modeling(nn.Module):
     
     def __init__(self, num_head, hidden_dim, input_dim, output_dim, tok_num):
