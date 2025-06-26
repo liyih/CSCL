@@ -60,6 +60,10 @@ Our pre-trained CSCL model: [link](https://drive.usercontent.google.com/download
 
 Make a folder ./results/CSCL/ and put the pre-trained model in it.
 
+## Train
+```
+sh train.sh
+```
 ## Inference
 
 Evaluation
